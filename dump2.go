@@ -42,6 +42,13 @@ func slugifyRemote(remoteURL string) string {
 	return url.QueryEscape(remoteURL)
 }
 
+// TODO: The file client _EXECUTES_ `git-upload-pack`...
+//    We'll have to rewrite this to avoid the git dependency.
+//    There should be no reason we can't use go concurrency here.
+// func overrideFileClient() {
+// 	client.InstallProtocol("file", githttp.NewClient(customClient))
+// }
+
 func main() {
 	if len(os.Args) != 4 {
 		fmt.Println("<remote> <ref> <target dir>")
@@ -181,20 +188,38 @@ func listSubmodules(gitStore storage.Storer, fs billy.Filesystem, commitHash plu
 	return result
 }
 
-func fetch(rawUrl string, uploadRequest *packp.UploadPackRequest) *packp.UploadPackResponse {
-	parsedUrl, err := url.Parse(rawUrl)
+const githubHostname = "github.com"
+
+func HasFoldedSuffix(s, suffix string) bool {
+	return len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix)
+}
+
+// this is hacky and should be improved
+func getEndpoint(remoteStr string) transport.Endpoint {
+	endpoint, err := transport.NewEndpoint(remoteStr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// force https submodules on github.com
-	if strings.EqualFold(parsedUrl.Hostname(), "github.com") {
-		parsedUrl.Scheme = "https"
-		log.Println("Rewriting URL: ", parsedUrl.String())
+	if endpoint.Protocol() == "http" {
+		parsedUrl, err := url.Parse(remoteStr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Force https urls on github.com because github is silly and will not send back a response
+		if HasFoldedSuffix(parsedUrl.Hostname(), githubHostname) {
+			parsedUrl.Scheme = "https"
+			log.Println("Rewriting URL: ", parsedUrl.String())
+		}
+		endpoint, err = transport.NewEndpoint(parsedUrl.String())
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
-	endpoint, err := transport.NewEndpoint(parsedUrl.String())
-	if err != nil {
-		log.Fatal(err)
-	}
+	return endpoint
+}
+
+func fetch(remoteStr string, uploadRequest *packp.UploadPackRequest) *packp.UploadPackResponse {
+	endpoint := getEndpoint(remoteStr)
 	gitClient, err := client.NewClient(endpoint)
 	if err != nil {
 		log.Fatal(err)
@@ -207,10 +232,18 @@ func fetch(rawUrl string, uploadRequest *packp.UploadPackRequest) *packp.UploadP
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = session.Close()
-	if err != nil {
-		log.Fatal(err)
-	}
+	// NOTE: This fixes the file transport blocking.
+	//   There _may_ be concurrency issues in non-file transports
+	//     But I haven't actually encountered them yet.
+	// FIXME: This is a terrible way to do this.
+	go func() {
+		log.Println("Closing session: ", session)
+		err = session.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Println("Session Closed: ", session)
+	}()
 
 	return response
 }
