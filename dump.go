@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,8 +22,18 @@ import (
 	"gopkg.in/src-d/go-git.v4/plumbing/transport"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/client"
 	"gopkg.in/src-d/go-git.v4/storage"
-	"gopkg.in/src-d/go-git.v4/storage/memory"
+	"gopkg.in/src-d/go-git.v4/storage/filesystem"
 )
+
+/*
+	Return a string that's safe to use as a dir name.
+
+	Uses URL query escaping so it remains roughly readable.
+	Does not attempt any URL normalization.
+*/
+func slugifyRemote(remoteURL string) string {
+	return url.QueryEscape(remoteURL)
+}
 
 func main() {
 	if len(os.Args) != 4 {
@@ -37,16 +48,33 @@ func main() {
 	fmt.Printf("hash: %s\n", hash)
 	fmt.Printf("dir: %s\n", workingDirectory)
 	ref := plumbing.NewReferenceFromStrings("", hash)
-	Main(remoteURL, ref.Hash(), workingDirectory, 0)
+	cacheDir := ".cache"
+	Main(remoteURL, ref.Hash(), cacheDir, workingDirectory, 0)
 }
 
-func Main(remoteURL string, commitHash plumbing.Hash, workingDirectory string, recursionDepth int) {
+func Main(remoteURL string, commitHash plumbing.Hash, cacheDir string, workingDirectory string, recursionDepth int) {
 	indent := strings.Repeat("\t", recursionDepth+1)
 	fmt.Printf("%sCloning %s from %s to %s\n", strings.Repeat("\t", recursionDepth), commitHash, remoteURL, workingDirectory)
 
-	gitStore := memory.NewStorage() // store git objects
+	if commitHash.IsZero() {
+		log.Fatal("super wat")
+	}
+
+	// cache of the .git files
+	cacheFS := osfs.New(filepath.Join(cacheDir, slugifyRemote(remoteURL), commitHash.String()))
+	gitStore, err := filesystem.NewStorage(cacheFS) // store git objects
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// where the repository files will go
 	fs := osfs.New(workingDirectory)
+
+	// Create a repository
 	repository, err := sdgit.Init(gitStore, fs)
+	if err == sdgit.ErrRepositoryAlreadyExists {
+		repository, err = sdgit.Open(gitStore, fs)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -54,7 +82,9 @@ func Main(remoteURL string, commitHash plumbing.Hash, workingDirectory string, r
 	fmt.Printf("%sCreate pack request: %v\n", indent, commitHash)
 	uploadRequest := packp.NewUploadPackRequest()
 	uploadRequest.Wants = []plumbing.Hash{commitHash}
-
+	if uploadRequest.IsEmpty() {
+		log.Fatal("wat")
+	}
 	fmt.Printf("%sFetch: %s\n", indent, remoteURL)
 	response := fetch(remoteURL, uploadRequest)
 
@@ -67,13 +97,13 @@ func Main(remoteURL string, commitHash plumbing.Hash, workingDirectory string, r
 	fmt.Printf("%sPlacing: %s\n", indent, workingDirectory)
 	worktree := checkout(repository, commitHash)
 
-	fmt.Printf("%sList submoudles...", indent)
+	fmt.Printf("%sList submoudles...\n", indent)
 	subs := listSubmodules(gitStore, worktree, commitHash)
 	fmt.Printf("%sFound submodules: %d\n", indent, len(subs))
 
 	for cfg, entry := range subs {
 		fmt.Printf("%sSubmodule: %s\n", indent, cfg.Path)
-		Main(cfg.URL, entry.Hash, filepath.Join(workingDirectory, cfg.Path), recursionDepth+1)
+		Main(cfg.URL, entry.Hash, cacheDir, filepath.Join(workingDirectory, cfg.Path), recursionDepth+1)
 	}
 }
 
@@ -82,7 +112,7 @@ func checkout(repository *sdgit.Repository, commitHash plumbing.Hash) *sdgit.Wor
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = worktree.Checkout(&sdgit.CheckoutOptions{Hash: commitHash})
+	err = worktree.Checkout(&sdgit.CheckoutOptions{Hash: commitHash, Force: true})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -135,5 +165,10 @@ func fetch(url string, uploadRequest *packp.UploadPackRequest) *packp.UploadPack
 	if err != nil {
 		log.Fatal(err)
 	}
+	err = session.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	return response
 }
