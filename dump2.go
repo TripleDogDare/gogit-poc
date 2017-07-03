@@ -84,19 +84,18 @@ func Main(remoteURL string, commitHash plumbing.Hash, cacheDir string, workingDi
 	// where the repository files will go
 	fs := osfs.New(workingDirectory)
 
-	fmt.Printf("%sCreate pack request: %v\n", indent, commitHash)
-	uploadRequest := packp.NewUploadPackRequest()
-	uploadRequest.Wants = []plumbing.Hash{commitHash}
-	if uploadRequest.IsEmpty() {
-		log.Fatal("wat")
-	}
-	fmt.Printf("%sFetch: %s\n", indent, remoteURL)
-	response := fetch(remoteURL, uploadRequest)
-
-	fmt.Printf("%sUpdate store\n", indent)
-	err = packfile.UpdateObjectStorage(gitStore, response)
+	_, err = object.GetCommit(gitStore, commitHash)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Printf("%sCreate pack request: %v\n", indent, commitHash)
+		uploadRequest := packp.NewUploadPackRequest()
+		uploadRequest.Wants = []plumbing.Hash{commitHash}
+		if uploadRequest.IsEmpty() {
+			log.Fatal("wat")
+		}
+		fmt.Printf("%sFetch: %s\n", indent, remoteURL)
+		fetch(remoteURL, gitStore, uploadRequest)
+	} else {
+		fmt.Printf("%sReference in cache\n", indent)
 	}
 
 	fmt.Printf("%sPlacing: %s\n", indent, workingDirectory)
@@ -218,7 +217,7 @@ func getEndpoint(remoteStr string) transport.Endpoint {
 	return endpoint
 }
 
-func fetch(remoteStr string, uploadRequest *packp.UploadPackRequest) *packp.UploadPackResponse {
+func fetch(remoteStr string, gitStore storer.Storer, uploadRequest *packp.UploadPackRequest) {
 	endpoint := getEndpoint(remoteStr)
 	gitClient, err := client.NewClient(endpoint)
 	if err != nil {
@@ -232,20 +231,19 @@ func fetch(remoteStr string, uploadRequest *packp.UploadPackRequest) *packp.Uplo
 	if err != nil {
 		log.Fatal(err)
 	}
-	// NOTE: This fixes the file transport blocking.
-	//   There _may_ be concurrency issues in non-file transports
-	//     But I haven't actually encountered them yet.
-	// FIXME: This is a terrible way to do this.
-	go func() {
-		log.Println("Closing session: ", session)
-		err = session.Close()
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println("Session Closed: ", session)
-	}()
 
-	return response
+	log.Println("Update store")
+	err = packfile.UpdateObjectStorage(gitStore, response)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Closing session: ", session)
+	err = session.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Session Closed: ", session)
 }
 
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
