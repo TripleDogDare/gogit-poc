@@ -9,34 +9,58 @@ import (
 	"gopkg.in/src-d/go-git.v4/plumbing/storer"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/client"
+	"gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 	"gopkg.in/src-d/go-git.v4/storage/memory"
 )
+
+func Challenge(user, instruction string, questions []string, echos []bool) (answers []string, err error) {
+	fmt.Println(user)
+	fmt.Println(instruction)
+	fmt.Println(questions)
+	fmt.Println(echos)
+	answers, err = []string{}, nil
+	return
+}
 
 func gitLsRemote(url string) memory.ReferenceStorage {
 	endpoint, err := transport.NewEndpoint(url)
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Println(endpoint.Protocol())
+	log.Println(endpoint.User())
 	gitClient, err := client.NewClient(endpoint)
 	if err != nil {
 		log.Fatal(err)
 	}
-	gitSession, err := gitClient.NewUploadPackSession(endpoint, nil)
+	log.Println("created client")
+	// authMethod := &ssh.KeyboardInteractive{
+	// 	Challenge: Challenge,
+	// }
+	authMethod, err := ssh.NewSSHAgentAuth(endpoint.User())
 	if err != nil {
 		log.Fatal(err)
 	}
+	gitSession, err := gitClient.NewUploadPackSession(endpoint, authMethod)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("created session")
 	advertisedRefs, err := gitSession.AdvertisedReferences()
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Println("received adv refs")
 	refs, err := advertisedRefs.AllReferences()
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Println("received all refs")
 	err = gitSession.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Println("closed session")
 	return refs
 }
 
